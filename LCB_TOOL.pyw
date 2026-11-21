@@ -11,10 +11,12 @@ import time
 import urllib.request
 import urllib.parse
 import webbrowser
+import subprocess
+import tempfile
 from pathlib import Path
 
 # =========================================================
-# LCB TOOL V3 - UPDATE CENTER EDITION
+# LCB TOOL V3 - AUTO UPDATE CENTER
 # =========================================================
 
 APP_NAME = "LCB TOOL"
@@ -62,6 +64,10 @@ GITHUB_RELEASE_PAGE = (
     "LCB-TOOL/releases"
 )
 
+HEARTBEAT_INTERVAL = 10
+ONLINE_TIMEOUT = 35
+NETWORK_TIMEOUT = 8
+
 BG = "#0b0b0d"
 PANEL = "#17171a"
 PANEL2 = "#202024"
@@ -78,6 +84,7 @@ GREEN_HOVER = "#2cc96b"
 # =========================================================
 
 def http_json(url, method="GET", data=None, headers=None):
+
     body = None
 
     request_headers = {
@@ -98,13 +105,45 @@ def http_json(url, method="GET", data=None, headers=None):
         method=method
     )
 
-    with urllib.request.urlopen(req, timeout=15) as response:
+    with urllib.request.urlopen(
+        req,
+        timeout=NETWORK_TIMEOUT
+    ) as response:
+
         content = response.read().decode("utf-8")
 
         if not content:
             return None
 
         return json.loads(content)
+
+
+def version_tuple(version):
+
+    version = str(version).lower().strip()
+
+    if version.startswith("v"):
+        version = version[1:]
+
+    parts = []
+
+    for item in version.split("."):
+
+        digits = ""
+
+        for char in item:
+
+            if char.isdigit():
+                digits += char
+            else:
+                break
+
+        if not digits:
+            return None
+
+        parts.append(int(digits))
+
+    return tuple(parts)
 
 
 # =========================================================
@@ -114,6 +153,7 @@ def http_json(url, method="GET", data=None, headers=None):
 class SnowBackground:
 
     def __init__(self, root):
+
         self.root = root
 
         self.canvas = tk.Canvas(
@@ -144,10 +184,12 @@ class SnowBackground:
         self.animate()
 
     def seed(self):
+
         w = max(self.root.winfo_width(), 430)
         h = max(self.root.winfo_height(), 390)
 
         for _ in range(42):
+
             x = random.randrange(w)
             y = random.randrange(h)
             r = random.choice((1, 1, 2, 2, 3))
@@ -169,7 +211,9 @@ class SnowBackground:
             ))
 
     def resize(self, event):
+
         if event.widget is self.root:
+
             self.canvas.place(
                 x=0,
                 y=0,
@@ -178,35 +222,43 @@ class SnowBackground:
             )
 
     def animate(self):
-        if not self.root.winfo_exists():
-            return
 
-        h = max(self.root.winfo_height(), 390)
-        w = max(self.root.winfo_width(), 430)
+        try:
 
-        for item, speed, drift in self.flakes:
-            self.canvas.move(item, drift, speed)
+            if not self.root.winfo_exists():
+                return
 
-            coords = self.canvas.coords(item)
+            h = max(self.root.winfo_height(), 390)
+            w = max(self.root.winfo_width(), 430)
 
-            if len(coords) < 4:
-                continue
+            for item, speed, drift in self.flakes:
 
-            x1, y1, x2, y2 = coords
+                self.canvas.move(item, drift, speed)
 
-            if y1 > h:
-                new_x = random.randrange(max(1, w - 8))
-                size = max(2, x2 - x1)
+                coords = self.canvas.coords(item)
 
-                self.canvas.coords(
-                    item,
-                    new_x,
-                    -5,
-                    new_x + size,
-                    -3
-                )
+                if len(coords) < 4:
+                    continue
 
-        self.root.after(55, self.animate)
+                x1, y1, x2, y2 = coords
+
+                if y1 > h:
+
+                    new_x = random.randrange(max(1, w - 8))
+                    size = max(2, x2 - x1)
+
+                    self.canvas.coords(
+                        item,
+                        new_x,
+                        -5,
+                        new_x + size,
+                        -3
+                    )
+
+            self.root.after(55, self.animate)
+
+        except tk.TclError:
+            pass
 
 
 # =========================================================
@@ -263,6 +315,7 @@ class RoundButton(tk.Canvas):
         self.draw(bg)
 
     def draw(self, color):
+
         self.delete("all")
 
         w = max(
@@ -333,6 +386,7 @@ class RoundButton(tk.Canvas):
 class LoginPage:
 
     def __init__(self, root):
+
         self.root = root
         self.success = False
 
@@ -475,6 +529,7 @@ class LoginPage:
         )
 
         if remembered:
+
             self.username.insert(
                 0,
                 remembered.get("username", "")
@@ -489,15 +544,19 @@ class LoginPage:
             self.password.focus_set()
 
         else:
+
             self.username.focus_set()
 
     def load_saved_credentials(self):
+
         try:
+
             data = json.loads(
                 LOGIN_FILE.read_text(encoding="utf-8")
             )
 
             if data.get("remembered"):
+
                 return {
                     "username": data.get("username", ""),
                     "password": data.get("password", "")
@@ -520,6 +579,7 @@ class LoginPage:
             if self.remember.get():
 
                 try:
+
                     LOGIN_FILE.write_text(
                         json.dumps({
                             "remembered": True,
@@ -530,6 +590,7 @@ class LoginPage:
                     )
 
                 except Exception as e:
+
                     messagebox.showwarning(
                         "LCB TOOL",
                         f"Could not save remembered credentials:\n{e}",
@@ -569,9 +630,12 @@ class ColorTool:
         self.startup_apply = startup_apply
 
         self.online_running = False
+        self.online_label = None
+
+        self.online_stop = threading.Event()
+
         self.firebase_uid = None
         self.firebase_token = None
-        self.online_label = None
 
         root.title(APP_NAME)
         root.geometry("790x740")
@@ -591,7 +655,9 @@ class ColorTool:
         self.dc = self.user.GetDC(None)
 
         if not self.dc:
-            raise RuntimeError("Could not access Windows display device.")
+            raise RuntimeError(
+                "Could not access Windows display device."
+            )
 
         self.gdi.GetDeviceGammaRamp(
             self.dc,
@@ -606,6 +672,7 @@ class ColorTool:
         self.load_settings()
 
         if startup_apply:
+
             self.apply_startup_settings()
 
             try:
@@ -657,6 +724,23 @@ class ColorTool:
             fg=RED,
             bg=BG
         ).pack()
+
+        self.online_label = tk.Label(
+            header,
+            text="ONLINE: CONNECTING...",
+            font=("Segoe UI", 8, "bold"),
+            fg=GREEN,
+            bg=PANEL,
+            padx=10,
+            pady=7
+        )
+
+        self.online_label.place(
+            relx=1.0,
+            x=-15,
+            y=12,
+            anchor="ne"
+        )
 
         main = tk.Frame(
             self.root,
@@ -760,8 +844,6 @@ class ColorTool:
                 font=("Segoe UI", 9)
             ).pack(side="right")
 
-        # PRESET ROW
-
         preset_row = tk.Frame(
             main,
             bg=BG
@@ -832,8 +914,6 @@ class ColorTool:
                 side="left",
                 padx=4
             )
-
-        # ACTION ROW
 
         action_row = tk.Frame(
             main,
@@ -908,6 +988,7 @@ class ColorTool:
     def get_values(self):
 
         if self.vars:
+
             return {
                 key: var.get()
                 for key, var in self.vars.items()
@@ -1057,6 +1138,7 @@ class ColorTool:
             )
 
             if not result and save:
+
                 messagebox.showwarning(
                     APP_NAME,
                     "Windows could not apply the display colour settings."
@@ -1065,6 +1147,7 @@ class ColorTool:
         except Exception as e:
 
             if save:
+
                 messagebox.showerror(
                     APP_NAME,
                     f"Could not apply display ramp:\n{e}"
@@ -1089,6 +1172,7 @@ class ColorTool:
     def load_settings(self):
 
         try:
+
             self.settings = json.loads(
                 SETTINGS_FILE.read_text(
                     encoding="utf-8"
@@ -1096,6 +1180,7 @@ class ColorTool:
             )
 
         except Exception:
+
             self.settings = DEFAULTS.copy()
 
         for key, default in DEFAULTS.items():
@@ -1128,6 +1213,7 @@ class ColorTool:
     def load_presets(self):
 
         try:
+
             self.presets = json.loads(
                 PRESET_FILE.read_text(
                     encoding="utf-8"
@@ -1135,6 +1221,7 @@ class ColorTool:
             )
 
         except Exception:
+
             self.presets = {}
 
     def write_presets(self):
@@ -1159,6 +1246,7 @@ class ColorTool:
     def refresh_combo(self):
 
         if hasattr(self, "combo"):
+
             self.combo["values"] = list(
                 self.presets.keys()
             )
@@ -1304,10 +1392,12 @@ class ColorTool:
                 else:
 
                     try:
+
                         winreg.DeleteValue(
                             key,
                             RUN_VALUE
                         )
+
                     except FileNotFoundError:
                         pass
 
@@ -1334,149 +1424,157 @@ class ColorTool:
     def start_online_counter(self):
 
         self.online_running = True
+        self.online_stop.clear()
 
         threading.Thread(
             target=self.firebase_worker,
             daemon=True
         ).start()
 
-    def firebase_worker(self):
+    def schedule_online_update(self, count):
 
         try:
 
-            auth_url = (
-                "https://identitytoolkit.googleapis.com/v1/"
-                "accounts:signUp?key="
-                + FIREBASE_API_KEY
-            )
+            if self.online_running:
 
-            auth_data = http_json(
-                auth_url,
-                method="POST",
-                data={
-                    "returnSecureToken": True
-                }
-            )
+                self.root.after(
+                    0,
+                    lambda c=count: self.update_online_label(c)
+                )
 
-            self.firebase_uid = auth_data["localId"]
-            self.firebase_token = auth_data["idToken"]
+        except (tk.TclError, RuntimeError):
+            pass
 
-            while self.online_running:
+    def firebase_worker(self):
+
+        auth_url = (
+            "https://identitytoolkit.googleapis.com/v1/"
+            "accounts:signUp?key="
+            + FIREBASE_API_KEY
+        )
+
+        while self.online_running and not self.online_stop.is_set():
+
+            if not self.firebase_uid or not self.firebase_token:
 
                 try:
 
-                    uid = self.firebase_uid
-                    token = self.firebase_token
-
-                    encoded_token = urllib.parse.quote(
-                        token,
-                        safe=""
-                    )
-
-                    heartbeat_url = (
-                        f"{FIREBASE_DB}/users/{uid}.json"
-                        f"?auth={encoded_token}"
-                    )
-
-                    http_json(
-                        heartbeat_url,
-                        method="PUT",
+                    auth_data = http_json(
+                        auth_url,
+                        method="POST",
                         data={
-                            "last_seen": int(time.time()),
-                            "version": APP_VERSION
+                            "returnSecureToken": True
                         }
                     )
 
-                    users_url = (
-                        f"{FIREBASE_DB}/users.json"
-                        f"?auth={encoded_token}"
-                    )
-
-                    users = http_json(users_url)
-
-                    now = int(time.time())
-                    count = 0
-
-                    if isinstance(users, dict):
-
-                        for user in users.values():
-
-                            if not isinstance(user, dict):
-                                continue
-
-                            last_seen = user.get(
-                                "last_seen",
-                                0
-                            )
-
-                            try:
-                                if now - int(last_seen) <= 90:
-                                    count += 1
-                            except Exception:
-                                pass
-
-                    self.root.after(
-                        0,
-                        lambda c=count:
-                        self.update_online_label(c)
-                    )
+                    self.firebase_uid = auth_data["localId"]
+                    self.firebase_token = auth_data["idToken"]
 
                 except Exception:
 
-                    self.root.after(
-                        0,
-                        lambda:
-                        self.update_online_label(None)
-                    )
+                    self.schedule_online_update(None)
+                    self.online_stop.wait(HEARTBEAT_INTERVAL)
+                    continue
 
-                time.sleep(30)
+            try:
 
-        except Exception:
+                uid = self.firebase_uid
+                token = self.firebase_token
 
-            self.root.after(
-                0,
-                lambda:
-                self.update_online_label(None)
-            )
+                encoded_token = urllib.parse.quote(
+                    token,
+                    safe=""
+                )
+
+                heartbeat_url = (
+                    f"{FIREBASE_DB}/users/{uid}.json"
+                    f"?auth={encoded_token}"
+                )
+
+                http_json(
+                    heartbeat_url,
+                    method="PUT",
+                    data={
+                        "last_seen": int(time.time()),
+                        "version": APP_VERSION
+                    }
+                )
+
+                users_url = (
+                    f"{FIREBASE_DB}/users.json"
+                    f"?auth={encoded_token}"
+                )
+
+                users = http_json(users_url)
+
+                now = int(time.time())
+                count = 0
+
+                if isinstance(users, dict):
+
+                    for user in users.values():
+
+                        if not isinstance(user, dict):
+                            continue
+
+                        last_seen = user.get("last_seen", 0)
+
+                        try:
+
+                            if now - int(last_seen) <= ONLINE_TIMEOUT:
+                                count += 1
+
+                        except (ValueError, TypeError):
+                            pass
+
+                self.schedule_online_update(count)
+
+            except Exception:
+
+                self.schedule_online_update(None)
+
+            self.online_stop.wait(HEARTBEAT_INTERVAL)
 
     def update_online_label(self, count):
 
-        if not self.online_running:
+        if not self.online_running or not self.online_label:
             return
 
-        if not self.online_label:
-            return
+        try:
 
-        if not self.online_label.winfo_exists():
-            return
+            if not self.online_label.winfo_exists():
+                return
 
-        if count is None:
+            if count is None:
 
-            self.online_label.config(
-                text="ONLINE USERS: CONNECTION FAILED"
-            )
+                self.online_label.config(
+                    text="ONLINE: CONNECTION FAILED",
+                    fg=RED
+                )
 
-        else:
+            else:
 
-            self.online_label.config(
-                text=f"ONLINE USERS: {count}"
-            )
+                self.online_label.config(
+                    text=f"ONLINE USERS: {count}",
+                    fg=GREEN
+                )
+
+        except tk.TclError:
+            pass
 
     # -----------------------------------------------------
-    # UPDATE CENTER
+    # UPDATE CENTER - GITHUB AUTO UPDATER
     # -----------------------------------------------------
 
     def open_update_center(self):
 
         page = tk.Toplevel(self.root)
 
-        page.title(
-            "LCB TOOL - UPDATE CENTER"
-        )
-
-        page.geometry("480x470")
+        page.title("LCB TOOL - UPDATE CENTER")
+        page.geometry("500x450")
         page.configure(bg=BG)
         page.resizable(False, False)
+        page.transient(self.root)
 
         tk.Label(
             page,
@@ -1484,7 +1582,7 @@ class ColorTool:
             font=("Segoe UI", 23, "bold"),
             fg=WHITE,
             bg=BG
-        ).pack(pady=(25, 5))
+        ).pack(pady=(24, 5))
 
         tk.Label(
             page,
@@ -1494,35 +1592,55 @@ class ColorTool:
             bg=BG
         ).pack(pady=5)
 
-        online = tk.Label(
-            page,
-            text="ONLINE USERS: CONNECTING...",
-            font=("Segoe UI", 12, "bold"),
-            fg=WHITE,
-            bg=PANEL,
-            padx=20,
-            pady=15
-        )
-
-        online.pack(
-            fill="x",
-            padx=25,
-            pady=15
-        )
-
-        self.online_label = online
-
         status = tk.Label(
             page,
             text="Ready to check for updates.",
             font=("Segoe UI", 10),
             fg=MUTED,
             bg=BG,
-            wraplength=410,
+            wraplength=430,
             justify="center"
         )
 
-        status.pack(pady=20)
+        status.pack(pady=(24, 14))
+
+        progress = ttk.Progressbar(
+            page,
+            orient="horizontal",
+            length=360,
+            mode="determinate",
+            maximum=100
+        )
+
+        progress.pack(pady=8)
+
+        percent_label = tk.Label(
+            page,
+            text="0%",
+            font=("Segoe UI", 9, "bold"),
+            fg=WHITE,
+            bg=BG
+        )
+
+        percent_label.pack(pady=3)
+
+        self.update_page_closed = False
+
+        update_data = {
+            "url": None,
+            "version": None,
+            "available": False
+        }
+
+        def safe_ui(callback):
+
+            try:
+
+                if page.winfo_exists():
+                    page.after(0, callback)
+
+            except tk.TclError:
+                pass
 
         def check_update():
 
@@ -1530,9 +1648,11 @@ class ColorTool:
                 text="Checking GitHub for updates..."
             )
 
-            check_button.config(
-                state="disabled"
-            )
+            progress["value"] = 0
+            percent_label.config(text="0%")
+
+            check_button.config(state="disabled")
+            download_button.config(state="disabled")
 
             def worker():
 
@@ -1542,111 +1662,283 @@ class ColorTool:
                         GITHUB_RELEASE_API
                     )
 
-                    version = release.get(
-                        "tag_name",
-                        ""
-                    )
-
-                    assets = release.get(
-                        "assets",
-                        []
-                    )
+                    version = release.get("tag_name", "")
+                    assets = release.get("assets", [])
 
                     download_url = None
+                    asset_size = 0
+                    asset_name = ""
 
                     for asset in assets:
 
-                        filename = asset.get(
-                            "name",
-                            ""
-                        ).lower()
+                        filename = asset.get("name", "")
 
-                        if filename.endswith(".exe"):
+                        if filename.lower().endswith(".exe"):
 
                             download_url = asset.get(
                                 "browser_download_url"
                             )
 
+                            asset_size = int(
+                                asset.get("size", 0)
+                            )
+
+                            asset_name = filename
                             break
 
-                    latest = version.lower().lstrip("v")
-                    current = APP_VERSION.lower().lstrip("v")
+                    latest_number = version_tuple(version)
+                    current_number = version_tuple(APP_VERSION)
 
-                    try:
-                        latest_number = tuple(
-                            int(x) for x in latest.split(".")
-                        )
+                    if latest_number is None or current_number is None:
 
-                        current_number = tuple(
-                            int(x) for x in current.split(".")
-                        )
+                        result = "Could not understand the version number."
+                        available = False
 
-                    except Exception:
-                        latest_number = None
-                        current_number = None
+                    elif latest_number <= current_number:
 
-                    if (
-                        latest_number is not None
-                        and current_number is not None
-                        and latest_number <= current_number
-                    ):
+                        result = "YOUR LCB TOOL IS UP TO DATE."
+                        available = False
+
+                    elif not download_url:
 
                         result = (
-                            "YOUR LCB TOOL IS UP TO DATE."
+                            f"NEW VERSION: {version}\n\n"
+                            "No EXE file was attached to this release."
                         )
 
-                    elif download_url:
-
-                        result = (
-                            f"NEW VERSION AVAILABLE: {version}\n\n"
-                            "A new EXE installer is available.\n"
-                            "Use the button below to open GitHub Releases."
-                        )
+                        available = False
 
                     else:
 
                         result = (
-                            f"NEW VERSION: {version}\n\n"
-                            "No EXE installer was attached to this release."
+                            f"NEW VERSION AVAILABLE: {version}\n\n"
+                            f"EXE FILE: {asset_name}\n\n"
+                            "Ready to download and update."
                         )
+
+                        available = True
+
+                    update_data["url"] = download_url
+                    update_data["version"] = version
+                    update_data["available"] = available
+                    update_data["size"] = asset_size
 
                     def show_result():
 
-                        status.config(
-                            text=result
+                        status.config(text=result)
+
+                        download_button.config(
+                            state="normal" if available else "disabled"
                         )
 
-                        if download_url and latest_number is not None and current_number is not None and latest_number > current_number:
+                        check_button.config(state="normal")
 
-                            download_button.config(
-                                state="normal"
-                            )
-
-                        check_button.config(
-                            state="normal"
-                        )
-
-                    self.root.after(
-                        0,
-                        show_result
-                    )
+                    safe_ui(show_result)
 
                 except Exception as e:
+
+                    error_text = str(e)
 
                     def show_error():
 
                         status.config(
-                            text="UPDATE CHECK FAILED:\n" + str(e)
+                            text="UPDATE CHECK FAILED:\n" + error_text
                         )
 
-                        check_button.config(
-                            state="normal"
-                        )
+                        check_button.config(state="normal")
 
-                    self.root.after(
-                        0,
-                        show_error
+                    safe_ui(show_error)
+
+            threading.Thread(
+                target=worker,
+                daemon=True
+            ).start()
+
+        def download_update():
+
+            if not update_data["available"]:
+                return
+
+            if not getattr(sys, "frozen", False):
+
+                messagebox.showinfo(
+                    APP_NAME,
+                    "Automatic replacement is available only in the compiled EXE version.\n\n"
+                    "Build and run LCB TOOL as a PyInstaller EXE first.",
+                    parent=page
+                )
+
+                webbrowser.open(GITHUB_RELEASE_PAGE)
+                return
+
+            answer = messagebox.askyesno(
+                "LCB TOOL UPDATE",
+                (
+                    f"New version {update_data['version']} is available.\n\n"
+                    "Download this EXE and install the update?"
+                ),
+                parent=page
+            )
+
+            if not answer:
+                return
+
+            download_button.config(state="disabled")
+            check_button.config(state="disabled")
+
+            progress["value"] = 0
+            percent_label.config(text="0%")
+            status.config(text="Downloading new LCB TOOL version...")
+
+            def worker():
+
+                try:
+
+                    url = update_data["url"]
+
+                    request = urllib.request.Request(
+                        url,
+                        headers={
+                            "User-Agent": "LCB-TOOL-Updater"
+                        }
                     )
+
+                    with urllib.request.urlopen(
+                        request,
+                        timeout=60
+                    ) as response:
+
+                        total = int(
+                            response.headers.get(
+                                "Content-Length",
+                                update_data.get("size", 0)
+                            )
+                        )
+
+                        temp_folder = Path(tempfile.gettempdir()) / "LCB_TOOL_UPDATE"
+                        temp_folder.mkdir(parents=True, exist_ok=True)
+
+                        downloaded_file = temp_folder / "LCB_TOOL_NEW.exe"
+                        temporary_file = temp_folder / "LCB_TOOL_NEW.download"
+
+                        received = 0
+
+                        with open(temporary_file, "wb") as output:
+
+                            while True:
+
+                                chunk = response.read(1024 * 128)
+
+                                if not chunk:
+                                    break
+
+                                output.write(chunk)
+                                received += len(chunk)
+
+                                if total > 0:
+
+                                    percent = min(
+                                        100,
+                                        int(received * 100 / total)
+                                    )
+
+                                else:
+                                    percent = 0
+
+                                def update_progress(p=percent):
+
+                                    try:
+
+                                        if page.winfo_exists():
+
+                                            progress["value"] = p
+                                            percent_label.config(
+                                                text=f"{p}%"
+                                            )
+
+                                    except tk.TclError:
+                                        pass
+
+                                safe_ui(update_progress)
+
+                    if received <= 0:
+                        raise RuntimeError("Downloaded file is empty.")
+
+                    if total > 0 and received != total:
+                        raise RuntimeError(
+                            "Download was incomplete. Please try again."
+                        )
+
+                    os.replace(
+                        temporary_file,
+                        downloaded_file
+                    )
+
+                    def confirm_install():
+
+                        status.config(
+                            text="Download completed successfully."
+                        )
+
+                        percent_label.config(text="100%")
+                        progress["value"] = 100
+
+                        install = messagebox.askyesno(
+                            "Install Update",
+                            (
+                                "Download completed successfully.\n\n"
+                                f"New version: {update_data['version']}\n\n"
+                                "LCB TOOL will close and install the new EXE.\n"
+                                "Continue?"
+                            ),
+                            parent=page
+                        )
+
+                        if install:
+
+                            try:
+
+                                self.install_update(
+                                    downloaded_file,
+                                    page
+                                )
+
+                            except Exception as e:
+
+                                messagebox.showerror(
+                                    APP_NAME,
+                                    f"Could not start updater:\n{e}",
+                                    parent=page
+                                )
+
+                                download_button.config(state="normal")
+                                check_button.config(state="normal")
+
+                        else:
+
+                            status.config(
+                                text="Update downloaded. Installation cancelled."
+                            )
+
+                            download_button.config(state="normal")
+                            check_button.config(state="normal")
+
+                    safe_ui(confirm_install)
+
+                except Exception as e:
+
+                    error_text = str(e)
+
+                    def show_download_error():
+
+                        status.config(
+                            text="DOWNLOAD FAILED:\n" + error_text
+                        )
+
+                        download_button.config(state="normal")
+                        check_button.config(state="normal")
+
+                    safe_ui(show_download_error)
 
             threading.Thread(
                 target=worker,
@@ -1655,9 +1947,7 @@ class ColorTool:
 
         def open_release():
 
-            webbrowser.open(
-                GITHUB_RELEASE_PAGE
-            )
+            webbrowser.open(GITHUB_RELEASE_PAGE)
 
         check_button = tk.Button(
             page,
@@ -1671,15 +1961,15 @@ class ColorTool:
             relief="flat",
             cursor="hand2",
             padx=25,
-            pady=12
+            pady=11
         )
 
-        check_button.pack(pady=8)
+        check_button.pack(pady=7)
 
         download_button = tk.Button(
             page,
-            text="OPEN DOWNLOAD PAGE",
-            command=open_release,
+            text="DOWNLOAD & UPDATE",
+            command=download_update,
             bg=GREEN,
             fg=WHITE,
             activebackground=GREEN_HOVER,
@@ -1688,11 +1978,26 @@ class ColorTool:
             relief="flat",
             cursor="hand2",
             padx=25,
-            pady=12,
+            pady=11,
             state="disabled"
         )
 
-        download_button.pack(pady=8)
+        download_button.pack(pady=7)
+
+        tk.Button(
+            page,
+            text="OPEN GITHUB RELEASES",
+            command=open_release,
+            bg=PANEL2,
+            fg=WHITE,
+            activebackground="#34343a",
+            activeforeground=WHITE,
+            font=("Segoe UI", 9, "bold"),
+            relief="flat",
+            cursor="hand2",
+            padx=18,
+            pady=8
+        ).pack(pady=5)
 
         tk.Label(
             page,
@@ -1702,7 +2007,7 @@ class ColorTool:
             bg=BG
         ).pack(
             side="bottom",
-            pady=15
+            pady=14
         )
 
         page.protocol(
@@ -1711,20 +2016,133 @@ class ColorTool:
         )
 
     # -----------------------------------------------------
+    # INSTALL DOWNLOADED UPDATE
+    # -----------------------------------------------------
+
+    def install_update(self, downloaded_file, update_page):
+
+        if not getattr(sys, "frozen", False):
+            raise RuntimeError(
+                "This installation method requires the compiled EXE."
+            )
+
+        current_exe = Path(sys.executable).resolve()
+        downloaded_file = Path(downloaded_file).resolve()
+
+        if not downloaded_file.exists():
+            raise FileNotFoundError("Downloaded update file was not found.")
+
+        if not current_exe.exists():
+            raise FileNotFoundError("Current LCB TOOL EXE was not found.")
+
+        # Save current settings before closing.
+        self.save_settings()
+
+        self.online_running = False
+        self.online_stop.set()
+
+        try:
+
+            self.user.ReleaseDC(
+                None,
+                self.dc
+            )
+
+        except Exception:
+            pass
+
+        # Create a separate updater batch file.
+        # It waits until this EXE closes, then replaces it.
+
+        updater_folder = Path(tempfile.gettempdir()) / "LCB_TOOL_UPDATE"
+        updater_folder.mkdir(parents=True, exist_ok=True)
+
+        updater_file = updater_folder / "LCB_TOOL_UPDATER.cmd"
+
+        pid = os.getpid()
+
+        batch_code = f"""@echo off
+setlocal
+title LCB TOOL UPDATER
+
+set "APP_PID={pid}"
+set "NEW_FILE={downloaded_file}"
+set "TARGET_FILE={current_exe}"
+
+:WAIT_FOR_APP
+tasklist /FI "PID eq %APP_PID%" 2>NUL | find "%APP_PID%" >NUL
+if not errorlevel 1 (
+    timeout /t 1 /nobreak >nul
+    goto WAIT_FOR_APP
+)
+
+if not exist "%NEW_FILE%" (
+    start "" "%TARGET_FILE%"
+    exit /b 1
+)
+
+copy /Y "%NEW_FILE%" "%TARGET_FILE%" >nul
+
+if errorlevel 1 (
+    start "" "%TARGET_FILE%"
+    exit /b 1
+)
+
+del "%NEW_FILE%" >nul 2>&1
+start "" "%TARGET_FILE%"
+
+del "%~f0" >nul 2>&1
+exit /b 0
+"""
+
+        updater_file.write_text(
+            batch_code,
+            encoding="utf-8"
+        )
+
+        creation_flags = getattr(
+            subprocess,
+            "CREATE_NO_WINDOW",
+            0
+        )
+
+        subprocess.Popen(
+            [
+                "cmd.exe",
+                "/c",
+                str(updater_file)
+            ],
+            cwd=str(updater_folder),
+            creationflags=creation_flags,
+            close_fds=True
+        )
+
+        # Close Update Center and main app.
+        try:
+            update_page.destroy()
+        except Exception:
+            pass
+
+        self.root.destroy()
+
+    # -----------------------------------------------------
     # CLOSE
     # -----------------------------------------------------
 
     def close(self):
 
         self.online_running = False
+        self.online_stop.set()
 
         self.save_settings()
 
         try:
+
             self.user.ReleaseDC(
                 None,
                 self.dc
             )
+
         except Exception:
             pass
 
@@ -1739,9 +2157,7 @@ if __name__ == "__main__":
 
     if os.name != "nt":
 
-        print(
-            "LCB TOOL is intended for Windows."
-        )
+        print("LCB TOOL is intended for Windows.")
 
     else:
 
@@ -1755,11 +2171,14 @@ if __name__ == "__main__":
             root.withdraw()
 
             try:
+
                 ColorTool(
                     root,
                     startup_apply=True
                 )
+
             except Exception:
+
                 root.destroy()
 
         else:
